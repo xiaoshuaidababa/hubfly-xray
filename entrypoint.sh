@@ -21,9 +21,16 @@ XCFG=$(cat <<JSON
   "inbounds": [{
     "listen": "127.0.0.1", "port": ${XPORT}, "protocol": "vless",
     "settings": { "clients": [ { "id": "${UUID}" } ], "decryption": "none" },
-    "streamSettings": { "network": "ws", "security": "none", "wsSettings": { "path": "${WSPATH}" } }
+    "streamSettings": { "network": "ws", "security": "none", "wsSettings": { "path": "${WSPATH}" } },
+    "sniffing": { "enabled": true, "destOverride": ["tls", "quic"], "routeOnly": true }
   }],
-  "outbounds": [ { "protocol": "freedom" } ]
+  "outbounds": [ { "protocol": "freedom", "tag": "direct" }, { "protocol": "blackhole", "tag": "block" } ],
+  "routing": { "domainStrategy": "IPIfNonMatch", "rules": [
+    { "type": "field", "protocol": ["bittorrent"], "outboundTag": "block" },
+    { "type": "field", "ip": ["0.0.0.0/8","10.0.0.0/8","100.64.0.0/10","127.0.0.0/8","169.254.0.0/16","172.16.0.0/12","192.0.0.0/24","192.168.0.0/16","198.18.0.0/15","224.0.0.0/4","240.0.0.0/4","::1/128","fc00::/7","fe80::/10"], "outboundTag": "block" },
+    { "type": "field", "domain": ["regexp:\\\\.internal$","regexp:\\\\.local$","domain:metadata.google.internal"], "outboundTag": "block" },
+    { "type": "field", "port": "25,465,587", "outboundTag": "block" }
+  ]}
 }
 JSON
 )
@@ -42,6 +49,7 @@ error_log stderr warn;
 events { worker_connections 1024; }
 http {
   access_log off;
+  server_tokens off;
   client_body_temp_path ${W}/body;
   proxy_temp_path ${W}/proxy;
   fastcgi_temp_path ${W}/fastcgi;
@@ -58,10 +66,11 @@ http {
       proxy_read_timeout 3600s;
       proxy_send_timeout 3600s;
     }
-    location / {
+    location = / {
       default_type text/html;
-      return 200 '<!doctype html><title>ok</title><p>ok</p>';
+      return 200 '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Field Notes</title></head><body><h1>Field Notes</h1><p>Personal notes. Nothing to see here yet.</p></body></html>';
     }
+    location / { return 404; }
   }
 }
 NGX
