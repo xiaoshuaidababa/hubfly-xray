@@ -32,7 +32,10 @@ printf '%s' "$XCFG" | /usr/local/bin/xray run -c stdin: &
 
 if [ -z "$W" ]; then echo "no writable dir; nginx cannot start" >&2; wait; exit 1; fi
 mkdir -p "$W/body" "$W/proxy" "$W/fastcgi" "$W/uwsgi" "$W/scgi" "$W/logs"
+NGXUSER=""
+[ "$(id -u)" = "0" ] && NGXUSER="user root root;"
 cat > "$W/nginx.conf" <<NGX
+${NGXUSER}
 worker_processes 1;
 pid ${W}/nginx.pid;
 error_log stderr warn;
