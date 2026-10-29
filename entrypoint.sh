@@ -24,7 +24,7 @@ cat > /tmp/xray.json <<JSON
 }
 JSON
 
-mkdir -p /run/nginx /tmp/nginx
+mkdir -p /tmp/nginx
 cat > /tmp/nginx.conf <<NGX
 worker_processes 1;
 pid /tmp/nginx/nginx.pid;
@@ -34,9 +34,11 @@ http {
   access_log off;
   client_body_temp_path /tmp/nginx/body;
   proxy_temp_path /tmp/nginx/proxy;
+  fastcgi_temp_path /tmp/nginx/fastcgi;
+  uwsgi_temp_path /tmp/nginx/uwsgi;
+  scgi_temp_path /tmp/nginx/scgi;
   server {
     listen ${PORT} default_server;
-    listen [::]:${PORT} default_server;
     location = ${WSPATH} {
       proxy_pass http://127.0.0.1:${XPORT};
       proxy_http_version 1.1;
@@ -56,4 +58,4 @@ NGX
 
 echo "starting xray on 127.0.0.1:${XPORT}, nginx on port ${PORT}, path ${WSPATH}"
 /usr/local/bin/xray run -c /tmp/xray.json &
-exec nginx -c /tmp/nginx.conf -g 'daemon off;'
+exec nginx -e /dev/stderr -c /tmp/nginx.conf -g 'daemon off;'
