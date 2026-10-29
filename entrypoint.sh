@@ -1,18 +1,21 @@
 #!/bin/sh
 # nginx on $PORT (health checks get 200), WS path proxied to xray VLESS on 127.0.0.1:10000.
-set -eu
+# Works on read-only root filesystems / random UIDs: picks the first writable dir.
+set -u
 
 UUID="${UUID:-00000000-0000-0000-0000-000000000000}"
 PORT="${PORT:-8080}"
 WSPATH="${WSPATH:-/tk-rail}"
 XPORT=10000
-
-if [ "$UUID" = "00000000-0000-0000-0000-000000000000" ] || [ "$UUID" = "CHANGE_ME" ]; then
-  echo "WARNING: set a real UUID env before handing out client links" >&2
-fi
 case "$WSPATH" in /*) ;; *) WSPATH="/$WSPATH" ;; esac
 
-cat > /tmp/xray.json <<JSON
+W=""
+for d in /tmp /dev/shm /run /var/tmp "$HOME"; do
+  if [ -n "$d" ] && mkdir -p "$d/hx" 2>/dev/null && touch "$d/hx/.w" 2>/dev/null; then W="$d/hx"; break; fi
+done
+echo "id: $(id) workdir: ${W:-none} port: ${PORT} path: ${WSPATH}"
+
+XCFG=$(cat <<JSON
 {
   "log": { "loglevel": "warning" },
   "inbounds": [{
@@ -23,20 +26,24 @@ cat > /tmp/xray.json <<JSON
   "outbounds": [ { "protocol": "freedom" } ]
 }
 JSON
+)
+# xray reads its config from stdin, no file needed
+printf '%s' "$XCFG" | /usr/local/bin/xray run -c stdin: &
 
-mkdir -p /tmp/nginx
-cat > /tmp/nginx.conf <<NGX
+if [ -z "$W" ]; then echo "no writable dir; nginx cannot start" >&2; wait; exit 1; fi
+mkdir -p "$W/body" "$W/proxy" "$W/fastcgi" "$W/uwsgi" "$W/scgi" "$W/logs"
+cat > "$W/nginx.conf" <<NGX
 worker_processes 1;
-pid /tmp/nginx/nginx.pid;
-error_log /dev/stderr warn;
+pid ${W}/nginx.pid;
+error_log stderr warn;
 events { worker_connections 1024; }
 http {
   access_log off;
-  client_body_temp_path /tmp/nginx/body;
-  proxy_temp_path /tmp/nginx/proxy;
-  fastcgi_temp_path /tmp/nginx/fastcgi;
-  uwsgi_temp_path /tmp/nginx/uwsgi;
-  scgi_temp_path /tmp/nginx/scgi;
+  client_body_temp_path ${W}/body;
+  proxy_temp_path ${W}/proxy;
+  fastcgi_temp_path ${W}/fastcgi;
+  uwsgi_temp_path ${W}/uwsgi;
+  scgi_temp_path ${W}/scgi;
   server {
     listen ${PORT} default_server;
     location = ${WSPATH} {
@@ -55,7 +62,5 @@ http {
   }
 }
 NGX
-
-echo "starting xray on 127.0.0.1:${XPORT}, nginx on port ${PORT}, path ${WSPATH}"
-/usr/local/bin/xray run -c /tmp/xray.json &
-exec nginx -e /dev/stderr -c /tmp/nginx.conf -g 'daemon off;'
+echo "starting nginx on ${PORT}"
+exec nginx -p "$W" -e stderr -c "$W/nginx.conf" -g 'daemon off;'
