@@ -1,45 +1,59 @@
 #!/bin/sh
-# Generate a minimal VLESS + WS inbound from env, then exec xray.
-# Required on platforms whose edge terminates TLS and forwards plain HTTP to $PORT.
+# nginx on $PORT (health checks get 200), WS path proxied to xray VLESS on 127.0.0.1:10000.
 set -eu
 
 UUID="${UUID:-00000000-0000-0000-0000-000000000000}"
 PORT="${PORT:-8080}"
 WSPATH="${WSPATH:-/tk-rail}"
+XPORT=10000
 
-# refuse obvious placeholder in production-ish logs (still start so panel health checks don't loop forever)
 if [ "$UUID" = "00000000-0000-0000-0000-000000000000" ] || [ "$UUID" = "CHANGE_ME" ]; then
   echo "WARNING: set a real UUID env before handing out client links" >&2
 fi
+case "$WSPATH" in /*) ;; *) WSPATH="/$WSPATH" ;; esac
 
-case "$WSPATH" in
-  /*) ;;
-  *) WSPATH="/$WSPATH" ;;
-esac
-
-CFG=/tmp/xray-config.json
-cat > "$CFG" <<JSON
+cat > /tmp/xray.json <<JSON
 {
   "log": { "loglevel": "warning" },
-  "inbounds": [
-    {
-      "listen": "0.0.0.0",
-      "port": ${PORT},
-      "protocol": "vless",
-      "settings": {
-        "clients": [ { "id": "${UUID}" } ],
-        "decryption": "none"
-      },
-      "streamSettings": {
-        "network": "ws",
-        "security": "none",
-        "wsSettings": { "path": "${WSPATH}" }
-      }
-    }
-  ],
+  "inbounds": [{
+    "listen": "127.0.0.1", "port": ${XPORT}, "protocol": "vless",
+    "settings": { "clients": [ { "id": "${UUID}" } ], "decryption": "none" },
+    "streamSettings": { "network": "ws", "security": "none", "wsSettings": { "path": "${WSPATH}" } }
+  }],
   "outbounds": [ { "protocol": "freedom" } ]
 }
 JSON
 
-echo "starting xray on port ${PORT} path ${WSPATH}"
-exec /usr/local/bin/xray run -c "$CFG"
+mkdir -p /run/nginx /tmp/nginx
+cat > /tmp/nginx.conf <<NGX
+worker_processes 1;
+pid /tmp/nginx/nginx.pid;
+error_log /dev/stderr warn;
+events { worker_connections 1024; }
+http {
+  access_log off;
+  client_body_temp_path /tmp/nginx/body;
+  proxy_temp_path /tmp/nginx/proxy;
+  server {
+    listen ${PORT} default_server;
+    listen [::]:${PORT} default_server;
+    location = ${WSPATH} {
+      proxy_pass http://127.0.0.1:${XPORT};
+      proxy_http_version 1.1;
+      proxy_set_header Upgrade \$http_upgrade;
+      proxy_set_header Connection "upgrade";
+      proxy_set_header Host \$host;
+      proxy_read_timeout 3600s;
+      proxy_send_timeout 3600s;
+    }
+    location / {
+      default_type text/html;
+      return 200 '<!doctype html><title>ok</title><p>ok</p>';
+    }
+  }
+}
+NGX
+
+echo "starting xray on 127.0.0.1:${XPORT}, nginx on port ${PORT}, path ${WSPATH}"
+/usr/local/bin/xray run -c /tmp/xray.json &
+exec nginx -c /tmp/nginx.conf -g 'daemon off;'
